@@ -33,7 +33,7 @@ class NqDataset(object):
     def read_nq_examples(input_path):
         logging.info("Reading examples from {}.".format(input_path))
         examples = []
-        with gzip.GzipFile(fileobj=tf.gfile.GFile(input_path, "rb")) as fi:
+        with gzip.GzipFile(fileobj=tf.io.gfile.GFile(input_path, "rb")) as fi:
             for line in fi:
                 if not isinstance(line, six.text_type):
                     line = line.decode("utf-8")

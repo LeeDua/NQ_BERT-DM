@@ -25,7 +25,7 @@ import enum
 import os
 import random
 import sys
-sys.path.append("/nq_model/")
+sys.path.append(os.getcwd())
 
 from io import open
 
@@ -705,7 +705,7 @@ def main():
         is_training = True if input_path.find("train") != -1 else False
 
         examples = []
-        with gzip.GzipFile(fileobj=tf.gfile.GFile(input_path, "rb")) as fi:
+        with gzip.GzipFile(fileobj=tf.io.gfile.GFile(input_path, "rb")) as fi:
             logging.info("Reading data from {}.".format(input_path))
             for line in fi:
                 if not isinstance(line, six.text_type):

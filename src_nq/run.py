@@ -37,7 +37,7 @@ from tqdm import tqdm, trange
 from glob import glob
 
 from pytorch_pretrained_bert.modeling import BertForQuestionAnswering, BertConfig
-from pytorch_pretrained_bert.optimization import BertAdam, warmup_linear
+from pytorch_pretrained_bert.optimization import BertAdam
 
 from modules.graph_encoder import Config, EdgeType, NodeType, EdgePosition
 from src_nq.create_examples import InputFeatures, NqExample, AnswerType
@@ -355,12 +355,12 @@ def eval_model(args, device, model, data_pattern):
     model.train()
     return eval_results["Long Answer F1"], eval_results["Short Answer F1"]
 
-
 def main():
     parser = argparse.ArgumentParser()
 
     ## Required parameters
     parser.add_argument("--model_dir", default=None, type=str, required=True, help="")
+    parser.add_argument('--bert_dir', default=None, type=str, required=True, help="")
     parser.add_argument("--my_config", default=None, type=str, required=True)
     parser.add_argument("--feature_path", default=None, type=str, required=True)
     parser.add_argument("--output_dir", default=None, type=str, required=True,
@@ -477,9 +477,11 @@ def main():
                                EdgeType.PARAGRAPH_TO_DOCUMENT]
     print(my_config)
     if args.do_train:
-        pretrained_config_file = os.path.join(args.model_dir, CONFIG_NAME)
+        pretrained_config_file = os.path.join(args.bert_dir, CONFIG_NAME)
         bert_config = BertConfig(pretrained_config_file)
-        pretrained_model_file = os.path.join(args.model_dir, WEIGHTS_NAME)
+        # pretrained_model_file = os.path.join(args.model_dir, WEIGHTS_NAME)
+        pretrained_model_file = os.path.join(args.model_dir)
+
 
         model = NqModel(bert_config=bert_config, my_config=my_config)
         model_dict = model.state_dict()
@@ -488,10 +490,11 @@ def main():
         model_dict.update(pretrained_model_dict)
         model.load_state_dict(model_dict)
     else:
-        pretrained_config_file = os.path.join(args.model_dir, CONFIG_NAME)
+        pretrained_config_file = os.path.join(args.bert_dir, CONFIG_NAME)
         bert_config = BertConfig(pretrained_config_file)
         model = NqModel(bert_config=bert_config, my_config=my_config)
-        pretrained_model_file = os.path.join(args.model_dir, WEIGHTS_NAME)
+        # pretrained_model_file = os.path.join(args.model_dir, WEIGHTS_NAME)
+        pretrained_model_file = os.path.join(args.model_dir)
         model.load_state_dict(torch.load(pretrained_model_file))
 
     if args.fp16:
@@ -550,12 +553,13 @@ def main():
         else:
             optimizer = FP16_Optimizer(optimizer, static_loss_scale=args.loss_scale)
     else:
-        if args.warmup_steps > 0:
-            args.warmup_proportion = min(args.warmup_proportion, args.warmup_steps / num_train_optimization_steps)
-        optimizer = BertAdam(optimizer_grouped_parameters,
-                             lr=args.learning_rate,
-                             warmup=args.warmup_proportion,
-                             t_total=num_train_optimization_steps)
+        if args.do_train:
+            if args.warmup_steps > 0:
+                args.warmup_proportion = min(args.warmup_proportion, args.warmup_steps / num_train_optimization_steps)
+            optimizer = BertAdam(optimizer_grouped_parameters,
+                                lr=args.learning_rate,
+                                warmup=args.warmup_proportion,
+                                t_total=num_train_optimization_steps)
 
     global_step = 0
     if args.do_train:
@@ -614,38 +618,41 @@ def main():
                     if (step + 1) % args.gradient_accumulation_steps == 0 and (
                         global_step + 1) % args.report_steps == 0 and (
                         args.local_rank == -1 or torch.distributed.get_rank() == 0):
-                        lr_this_step = args.learning_rate * warmup_linear(
-                            global_step / num_train_optimization_steps,
-                            args.warmup_proportion)
-                        logging.info("Epoch={} iter={} lr={:.6f} train_ave_loss={:.6f} .".format(
+                        # lr_this_step = args.learning_rate * warmup_linear(
+                        #     global_step / num_train_optimization_steps,
+                        #     args.warmup_proportion)
+                        logging.info("Epoch={} iter={} train_ave_loss={:.6f} .".format(
+                        # logging.info("Epoch={} iter={} lr={:.6f} train_ave_loss={:.6f} .".format(
                             # _, global_step, lr_this_step, tr_loss / nb_tr_examples))
-                            _, global_step, lr_this_step, (tr_loss - report_loss) / args.report_steps))
+                            # _, global_step, lr_this_sep, (tr_loss - report_loss) / args.report_steps))
+                            _, global_step, (tr_loss - report_loss) / args.report_steps))
                         report_loss = tr_loss
+
+                    if args.do_train and (args.local_rank == -1 or torch.distributed.get_rank() == 0) and (global_step % 4000 == 0):
+                        # Save a trained model, configuration and tokenizer
+                        model_to_save = model.module if hasattr(model, 'module') else model  # Only save the model it-self
+
+                        # If we save using the predefined names, we can load using `from_pretrained`
+                        output_model_file = os.path.join(args.output_dir, WEIGHTS_NAME+"."+str(global_step))
+                        torch.save(model_to_save.state_dict(), output_model_file)
+
+                        output_config_file = os.path.join(args.output_dir, CONFIG_NAME)
+                        with open(output_config_file, 'w') as f:
+                            f.write(model_to_save.config.to_json_string())
+
+                        bert_config = BertConfig(output_config_file)
+                        model = NqModel(bert_config=bert_config, my_config=my_config)
+                        model.load_state_dict(torch.load(output_model_file))
+                        if args.fp16:
+                            model.half()
+                        model.to(device)
+                        if n_gpu > 1:
+                            model = torch.nn.DataParallel(model)
 
             if args.valid_pattern and (args.local_rank == -1 or torch.distributed.get_rank() == 0):
                 valid_result = eval_model(args, device, model, args.valid_pattern)
                 logging.info("valid_result = {}".format(valid_result))
 
-    if args.do_train and (args.local_rank == -1 or torch.distributed.get_rank() == 0):
-        # Save a trained model, configuration and tokenizer
-        model_to_save = model.module if hasattr(model, 'module') else model  # Only save the model it-self
-
-        # If we save using the predefined names, we can load using `from_pretrained`
-        output_model_file = os.path.join(args.output_dir, WEIGHTS_NAME)
-        torch.save(model_to_save.state_dict(), output_model_file)
-
-        output_config_file = os.path.join(args.output_dir, CONFIG_NAME)
-        with open(output_config_file, 'w') as f:
-            f.write(model_to_save.config.to_json_string())
-
-        bert_config = BertConfig(output_config_file)
-        model = NqModel(bert_config=bert_config, my_config=my_config)
-        model.load_state_dict(torch.load(output_model_file))
-        if args.fp16:
-            model.half()
-        model.to(device)
-        if n_gpu > 1:
-            model = torch.nn.DataParallel(model)
 
     if args.do_predict and (args.local_rank == -1 or torch.distributed.get_rank() == 0):
         test_result = eval_model(args, device, model, args.test_pattern)

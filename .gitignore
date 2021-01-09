@@ -1,0 +1,8 @@
+.vscode/
+ipynb_checkpoints/
+bert_pretrained/
+checkpts/
+checkpts_squad/
+natural_questions/
+squad_trained_model/
+__pycache__/
